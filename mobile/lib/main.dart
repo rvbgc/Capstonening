@@ -1,11 +1,19 @@
+import 'dart:async';
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
+import 'package:http/http.dart' as http;
+
 import 'backend_status.dart';
+
 void main() {
   runApp(const SmishGuardApp());
 }
 
 class SmishGuardApp extends StatelessWidget {
-  const SmishGuardApp({super.key});
+  const SmishGuardApp({super.key, this.client});
+
+  final http.Client? client;
 
   @override
   Widget build(BuildContext context) {
@@ -16,13 +24,15 @@ class SmishGuardApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
       ),
-      home: const MessageScreen(),
+      home: MessageScreen(client: client),
     );
   }
 }
 
 class MessageScreen extends StatefulWidget {
-  const MessageScreen({super.key});
+  const MessageScreen({super.key, this.client});
+
+  final http.Client? client;
 
   @override
   State<MessageScreen> createState() => _MessageScreenState();
@@ -30,33 +40,98 @@ class MessageScreen extends StatefulWidget {
 
 class _MessageScreenState extends State<MessageScreen> {
   final _messageController = TextEditingController();
+  late final http.Client _client;
+
   String? _error;
+  String? _result;
+  bool _loading = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _client = widget.client ?? http.Client();
+  }
 
   @override
   void dispose() {
     _messageController.dispose();
+
+    if (widget.client == null) {
+      _client.close();
+    }
+
     super.dispose();
   }
 
-  void _analyze() {
-    if (_messageController.text.trim().isEmpty) {
+  Future<void> _analyze() async {
+    if (_loading) return;
+
+    final text = _messageController.text.trim();
+
+    if (text.isEmpty) {
       setState(() {
         _error = 'Enter a message first.';
+        _result = null;
       });
       return;
     }
 
     setState(() {
       _error = null;
+      _result = null;
+      _loading = true;
     });
 
-    ScaffoldMessenger.of(context).showSnackBar(
-      const SnackBar(
-        content: Text(
-          'Analysis is not available yet. No message has been sent.',
-        ),
-      ),
-    );
+    String result;
+
+    try {
+      final response = await _client
+          .post(
+            Uri.parse('http://10.0.2.2:8000/analyze'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({'text': text}),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 503) {
+        final data = jsonDecode(response.body);
+        final detail =
+            data is Map<String, dynamic> ? data['detail'] : null;
+
+        if (detail is Map<String, dynamic> &&
+            detail['code'] == 'MODEL_NOT_READY') {
+          result =
+              'The server received your message. '
+              'Detection is not available yet. '
+              'No risk assessment was made.';
+        } else {
+          result = 'Analysis is temporarily unavailable. Try again later.';
+        }
+      } else if (response.statusCode == 422) {
+        result =
+            'The server rejected the submission. '
+            'Enter one message containing 1–5,000 characters.';
+      } else {
+        result =
+            'The server returned an unexpected response. '
+            'No assessment is available.';
+      }
+    } on TimeoutException {
+      result = 'The request timed out. No assessment was received.';
+    } on http.ClientException {
+      result = 'Cannot reach the server. Check your connection and retry.';
+    } catch (_) {
+      result =
+          'The response could not be processed. '
+          'No assessment is available.';
+    }
+
+    if (!mounted) return;
+
+    setState(() {
+      _loading = false;
+      _result = result;
+    });
   }
 
   @override
@@ -70,8 +145,8 @@ class _MessageScreenState extends State<MessageScreen> {
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
-              const BackendStatus(),
-             const Icon(
+            const BackendStatus(),
+            const Icon(
               Icons.shield_outlined,
               size: 64,
               color: Colors.teal,
@@ -89,9 +164,16 @@ class _MessageScreenState extends State<MessageScreen> {
             const SizedBox(height: 24),
             TextField(
               controller: _messageController,
+              readOnly: _loading,
               minLines: 6,
               maxLines: 12,
               maxLength: 5000,
+              onChanged: (_) {
+                setState(() {
+                  _error = null;
+                  _result = null;
+                });
+              },
               decoration: InputDecoration(
                 labelText: 'SMS message',
                 hintText: 'Paste the message here...',
@@ -102,13 +184,32 @@ class _MessageScreenState extends State<MessageScreen> {
             ),
             const SizedBox(height: 16),
             FilledButton.icon(
-              onPressed: _analyze,
-              icon: const Icon(Icons.search),
-              label: const Text('Analyze Message'),
+              onPressed: _loading ? null : _analyze,
+              icon: _loading
+                  ? const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  : const Icon(Icons.search),
+              label: Text(_loading ? 'Submitting...' : 'Analyze Message'),
             ),
+            if (_result != null) ...[
+              const SizedBox(height: 20),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
+                  child: Semantics(
+                    liveRegion: true,
+                    child: Text(_result!),
+                  ),
+                ),
+              ),
+            ],
             const SizedBox(height: 16),
             const Text(
-              'Prototype: message detection is not connected yet.',
+              'Messages are sent to the analysis server. '
+              'Detection is not available yet.',
               textAlign: TextAlign.center,
             ),
           ],
