@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
 import 'backend_status.dart';
+import 'screenshot_input.dart';
 
 void main() {
   runApp(const SmishGuardApp());
@@ -45,6 +46,7 @@ class _MessageScreenState extends State<MessageScreen> {
   String? _error;
   String? _result;
   bool _loading = false;
+  bool _ocrLoading = false;
 
   @override
   void initState() {
@@ -64,7 +66,7 @@ class _MessageScreenState extends State<MessageScreen> {
   }
 
   Future<void> _analyze() async {
-    if (_loading) return;
+    if (_loading || _ocrLoading) return;
 
     final text = _messageController.text.trim();
 
@@ -162,9 +164,24 @@ class _MessageScreenState extends State<MessageScreen> {
               'Remove passwords, OTPs, and account details first.',
             ),
             const SizedBox(height: 24),
+            ScreenshotInput(
+  enabled: !_loading,
+  onBusyChanged: (busy) {
+    setState(() {
+      _ocrLoading = busy;
+    });
+  },
+  onTextExtracted: (text) {
+    setState(() {
+      _messageController.text = text;
+      _error = null;
+      _result = null;
+    });
+  },
+),
             TextField(
               controller: _messageController,
-              readOnly: _loading,
+              readOnly: _loading || _ocrLoading,
               minLines: 6,
               maxLines: 12,
               maxLength: 5000,
@@ -184,7 +201,7 @@ class _MessageScreenState extends State<MessageScreen> {
             ),
             const SizedBox(height: 16),
             FilledButton.icon(
-              onPressed: _loading ? null : _analyze,
+              onPressed: (_loading || _ocrLoading) ? null : _analyze,
               icon: _loading
                   ? const SizedBox(
                       width: 18,

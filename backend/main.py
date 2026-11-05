@@ -1,8 +1,10 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+from ocr_routes import OCRUploadLimit, router as ocr_router
 
 app = FastAPI(title="SMISHGUARD API")
-
+app.add_middleware(OCRUploadLimit)
+app.include_router(ocr_router)
 
 class AnalysisRequest(BaseModel):
     # Reject unexpected fields instead of silently accepting them.
