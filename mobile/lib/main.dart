@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-
+import 'backend_status.dart';
 void main() {
   runApp(const SmishGuardApp());
 }
@@ -70,7 +70,8 @@ class _MessageScreenState extends State<MessageScreen> {
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
-            const Icon(
+              const BackendStatus(),
+             const Icon(
               Icons.shield_outlined,
               size: 64,
               color: Colors.teal,
