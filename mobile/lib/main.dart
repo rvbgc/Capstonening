@@ -47,6 +47,142 @@ class _MessageScreenState extends State<MessageScreen> {
   String? _result;
   bool _loading = false;
   bool _ocrLoading = false;
+  bool _reporting = false;
+  String _inputMethod = 'text';
+  String? _reportResult;
+
+  Future<void> _reportMessage() async {
+    if (_loading || _ocrLoading || _reporting) return;
+
+    final text = _messageController.text.trim();
+    final inputMethod = _inputMethod;
+
+    if (text.isEmpty || text.runes.length > 5000) {
+      setState(() {
+        _error = 'Enter one message containing 1–5,000 characters.';
+      });
+      return;
+    }
+
+    FocusScope.of(context).unfocus();
+
+    setState(() {
+      _reporting = true;
+      _reportResult = null;
+      _error = null;
+    });
+
+    String? notice;
+
+    try {
+      final consent = await showDialog<bool>(
+        context: context,
+        builder: (dialogContext) {
+          return AlertDialog(
+            key: const ValueKey('report-consent-dialog'),
+            title: const Text('Submit this message?'),
+            content: SingleChildScrollView(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  const Text(
+                    'The message text below will be sent to SMISHGUARD '
+                    'and stored with the model assessment, when available, '
+                    'for review. Remove passwords, OTPs, account details, '
+                    'and unnecessary personal information first.',
+                  ),
+                  const SizedBox(height: 16),
+                  Text(text),
+                  const SizedBox(height: 16),
+                  const Text(
+                    'The original screenshot is not included in this report. '
+                    'Submitting a report does not confirm that the message '
+                    'is smishing.',
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                key: const ValueKey('cancel-report-button'),
+                onPressed: () => Navigator.of(dialogContext).pop(false),
+                child: const Text('Cancel'),
+              ),
+              FilledButton(
+                key: const ValueKey('confirm-report-button'),
+                onPressed: () => Navigator.of(dialogContext).pop(true),
+                child: const Text('Submit report'),
+              ),
+            ],
+          );
+        },
+      );
+
+      if (!mounted || consent != true) return;
+
+      final response = await _client
+          .post(
+            Uri.parse('http://10.0.2.2:8000/reports'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'text': text,
+              'input_method': inputMethod,
+              'consent': true,
+            }),
+          )
+          .timeout(const Duration(seconds: 15));
+
+      if (response.statusCode == 201) {
+        final data = jsonDecode(response.body);
+
+        if (data is! Map<String, dynamic>) {
+          throw const FormatException('Invalid report response.');
+        }
+
+        final reportId = data['report_id'];
+
+        if (reportId is! String ||
+            reportId.trim().isEmpty ||
+            data['review_status'] != 'pending') {
+          throw const FormatException('Invalid report receipt.');
+        }
+
+        notice =
+            'Report submitted.\n\n'
+            'Status: Pending review\n'
+            'Report ID: $reportId\n\n'
+            'This report has not been verified.';
+      } else if (response.statusCode == 422) {
+        notice = 'The report was rejected. Check the message and try again.';
+      } else {
+        notice =
+            'Report submission could not be confirmed. '
+            'Check the server before trying again.';
+      }
+    } on TimeoutException {
+      notice =
+          'The request timed out. Your report may have been saved. '
+          'Check before submitting it again.';
+    } on http.ClientException {
+      notice =
+          'The server connection failed. '
+          'Report submission was not confirmed.';
+    } catch (_) {
+      notice =
+          'The response could not be processed. '
+          'Report submission was not confirmed.';
+    } finally {
+      if (mounted) {
+        setState(() {
+          _reporting = false;
+          if (notice != null) {
+            _reportResult = notice;
+          }
+        });
+      }
+    }
+  }
 
   @override
   void initState() {
@@ -66,7 +202,7 @@ class _MessageScreenState extends State<MessageScreen> {
   }
 
   Future<void> _analyze() async {
-    if (_loading || _ocrLoading) return;
+    if (_loading || _ocrLoading || _reporting) return;
 
     final text = _messageController.text.trim();
 
@@ -95,10 +231,70 @@ class _MessageScreenState extends State<MessageScreen> {
           )
           .timeout(const Duration(seconds: 15));
 
-      if (response.statusCode == 503) {
+      if (response.statusCode == 200) {
         final data = jsonDecode(response.body);
-        final detail =
-            data is Map<String, dynamic> ? data['detail'] : null;
+
+        if (data is! Map<String, dynamic>) {
+          throw const FormatException('Invalid response format.');
+        }
+
+        final label = data['label'];
+        final message = data['message'];
+
+        if (message is! String || message.trim().isEmpty) {
+          throw const FormatException('Missing assessment message.');
+        }
+
+        if (label != 'smishing' && label != 'non_smishing') {
+          throw const FormatException('Unknown classification label.');
+        }
+
+        final heading = label == 'smishing'
+            ? 'Possible smishing detected'
+            : 'Smishing not detected';
+
+        const urlHeadings = <String, String>{
+          'matched': 'URL match in the PhishHunt feed',
+          'not_listed': 'No URL match in the PhishHunt feed',
+          'no_urls': 'No complete web link recognized',
+          'stale': 'URL check unavailable: outdated threat data',
+          'unavailable': 'URL check unavailable',
+          'not_checked': 'URLs were not checked',
+          'incomplete': 'URL check incomplete',
+        };
+
+        var urlHeading = 'URL check unavailable';
+        var urlMessage =
+            'No usable URL-check result was received. '
+            'The safety of any links has not been established.';
+
+        final threatInfo = data['threat_intelligence'];
+
+        if (threatInfo is Map<String, dynamic> &&
+            threatInfo['source'] == 'PhishHunt') {
+          final urlStatus = threatInfo['status'];
+          final backendUrlMessage = threatInfo['message'];
+
+          if (urlStatus is String &&
+              urlHeadings.containsKey(urlStatus) &&
+              backendUrlMessage is String &&
+              backendUrlMessage.trim().isNotEmpty) {
+            urlHeading = urlHeadings[urlStatus]!;
+            urlMessage = backendUrlMessage.trim();
+          }
+        }
+
+        result =
+            'SMS assessment\n'
+            '$heading\n\n'
+            '$message\n\n'
+            'URL check\n'
+            '$urlHeading\n\n'
+            '$urlMessage\n\n'
+            'Preliminary prototype result.';
+      } else if (response.statusCode == 503) {
+        final data = jsonDecode(response.body);
+        final detail = data is Map<String, dynamic> ? data['detail'] : null;
 
         if (detail is Map<String, dynamic> &&
             detail['code'] == 'MODEL_NOT_READY') {
@@ -139,20 +335,13 @@ class _MessageScreenState extends State<MessageScreen> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('SMISHGUARD'),
-        centerTitle: true,
-      ),
+      appBar: AppBar(title: const Text('SMISHGUARD'), centerTitle: true),
       body: SafeArea(
         child: ListView(
           padding: const EdgeInsets.all(24),
           children: [
             const BackendStatus(),
-            const Icon(
-              Icons.shield_outlined,
-              size: 64,
-              color: Colors.teal,
-            ),
+            const Icon(Icons.shield_outlined, size: 64, color: Colors.teal),
             const SizedBox(height: 20),
             Text(
               'Check a suspicious message',
@@ -165,30 +354,41 @@ class _MessageScreenState extends State<MessageScreen> {
             ),
             const SizedBox(height: 24),
             ScreenshotInput(
-  enabled: !_loading,
-  onBusyChanged: (busy) {
-    setState(() {
-      _ocrLoading = busy;
-    });
-  },
-  onTextExtracted: (text) {
-    setState(() {
-      _messageController.text = text;
-      _error = null;
-      _result = null;
-    });
-  },
-),
+              enabled: !_loading && !_reporting,
+              onBusyChanged: (busy) {
+                if (!mounted) return;
+
+                setState(() {
+                  _ocrLoading = busy;
+                });
+              },
+              onTextExtracted: (text) {
+                if (!mounted) return;
+
+                setState(() {
+                  _messageController.text = text;
+                  _inputMethod = 'screenshot';
+                  _error = null;
+                  _result = null;
+                  _reportResult = null;
+                });
+              },
+            ),
             TextField(
               controller: _messageController,
-              readOnly: _loading || _ocrLoading,
+              readOnly: _loading || _ocrLoading || _reporting,
               minLines: 6,
               maxLines: 12,
               maxLength: 5000,
-              onChanged: (_) {
+              onChanged: (value) {
                 setState(() {
+                  if (value.trim().isEmpty) {
+                    _inputMethod = 'text';
+                  }
+
                   _error = null;
                   _result = null;
+                  _reportResult = null;
                 });
               },
               decoration: InputDecoration(
@@ -201,7 +401,10 @@ class _MessageScreenState extends State<MessageScreen> {
             ),
             const SizedBox(height: 16),
             FilledButton.icon(
-              onPressed: (_loading || _ocrLoading) ? null : _analyze,
+              key: const ValueKey('analyze-message-button'),
+              onPressed: (_loading || _ocrLoading || _reporting)
+                  ? null
+                  : _analyze,
               icon: _loading
                   ? const SizedBox(
                       width: 18,
@@ -216,17 +419,39 @@ class _MessageScreenState extends State<MessageScreen> {
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(16),
+                  child: Semantics(liveRegion: true, child: Text(_result!)),
+                ),
+              ),
+            ],
+            const SizedBox(height: 16),
+            OutlinedButton.icon(
+              key: const ValueKey('report-message-button'),
+              onPressed:
+                  (_loading ||
+                      _ocrLoading ||
+                      _reporting ||
+                      _messageController.text.trim().isEmpty)
+                  ? null
+                  : _reportMessage,
+              icon: const Icon(Icons.flag_outlined),
+              label: Text(_reporting ? 'Please wait...' : 'Report Message'),
+            ),
+            if (_reportResult != null) ...[
+              const SizedBox(height: 16),
+              Card(
+                child: Padding(
+                  padding: const EdgeInsets.all(16),
                   child: Semantics(
                     liveRegion: true,
-                    child: Text(_result!),
+                    child: Text(_reportResult!),
                   ),
                 ),
               ),
             ],
             const SizedBox(height: 16),
             const Text(
-              'Messages are sent to the analysis server. '
-              'Detection is not available yet.',
+              'Prototype results may be incorrect. '
+              'Verify suspicious messages through official channels.',
               textAlign: TextAlign.center,
             ),
           ],

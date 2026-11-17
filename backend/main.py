@@ -1,8 +1,18 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, ConfigDict, Field, field_validator
+
 from ocr_routes import OCRUploadLimit, router as ocr_router
+from model_service import model_ready, predict_message
+from report_routes import router as report_router
+from admin_routes import router as admin_router
+from threat_intel import check_message_links
+
 
 app = FastAPI(title="SMISHGUARD API")
+
+app.include_router(report_router)
+app.include_router(admin_router)
+
 app.add_middleware(OCRUploadLimit)
 app.include_router(ocr_router)
 
@@ -32,21 +42,12 @@ class AnalysisRequest(BaseModel):
 def health():
     return {
         "status": "ok",
-        "model_ready": False,
+        "model_ready": model_ready(),
     }
 
 
 @app.post("/analyze")
 def analyze_message(submission: AnalysisRequest):
-    # FastAPI validates the submission before this function runs.
-    # Do not produce a prediction until a trained model is available.
-    raise HTTPException(
-        status_code=503,
-        detail={
-            "code": "MODEL_NOT_READY",
-            "message": (
-                "Your message passed input validation, "
-                "but detection is not available yet."
-            ),
-        },
-    )
+    result = predict_message(submission.text)
+    result["threat_intelligence"] = check_message_links(submission.text)
+    return result
