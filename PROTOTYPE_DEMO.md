@@ -175,9 +175,11 @@ Backend checks (backend running, from the `backend` folder):
 .\.venv\Scripts\python.exe check_auth.py
 .\.venv\Scripts\python.exe check_history.py
 .\.venv\Scripts\python.exe check_account_deletion.py
+.\.venv\Scripts\python.exe check_url_extraction.py
 ```
 
-Each prints `PASS` lines and creates/removes its own temporary accounts.
+Each prints `PASS` lines. The account checks create and remove their own
+temporary accounts; `check_url_extraction.py` runs offline.
 
 App checks (from the `mobile` folder):
 
@@ -261,7 +263,12 @@ public.
   message-specific explanation of why a message was flagged.
 - **English only.** Taglish and Filipino messages are not supported.
 - **URL check is a cached feed match.** *Not listed* does not mean a link
-  is safe; new phishing links may not be listed yet.
+  is safe; new phishing links may not be listed yet. Complete links, bare
+  domains (`globe-phl2i.com`), short links (`bit.ly/...`) and links split
+  across lines are recognised; deliberately obfuscated links (spaces or
+  symbols inserted) and domains outside the supported list are not.
+- **The feed must be fresh.** If the feed updater is not running, the cache
+  becomes stale after two hours and links are not checked.
 - **OCR can misread text.** Users must review extracted text; a screenshot
   does not prove a message is authentic.
 - **Local prototype.** Plain HTTP on a local network, no public hosting, no

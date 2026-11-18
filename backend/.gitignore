@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .env
 /backend/.env
+
+# Local admin-token helper or output. Never commit.
+create_admin_token

@@ -8,6 +8,25 @@ from sync_threat_feed import CACHE_PATH, FEED_URL, MAX_BYTES
 
 URL_PATTERN = re.compile(r"""https?://[^\s<>"']+""", re.IGNORECASE)
 
+# Top-level domains accepted for links written without http:// or https://.
+# A fixed list avoids treating ordinary text such as "today.Please" as a link.
+BARE_LINK_TLDS = (
+    "app|asia|biz|buzz|cc|cf|click|club|cn|co|com|cyou|ga|gd|gov|gq|icu|"
+    "info|io|is|lat|link|live|love|ly|makeup|me|ml|mobi|net|online|org|ph|"
+    "pw|ru|shop|site|store|su|tk|to|top|vip|win|ws|xyz"
+)
+
+BARE_LINK_PATTERN = re.compile(
+    r"(?<![@\w.-])"                                  # not part of an email
+    r"((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+"   # labels, e.g. globe-phl2i.
+    r"(?:" + BARE_LINK_TLDS + r"))"                   # known top-level domain
+    r"(?![\w-])"
+    r"(/[^\s<>\"']*)?",                               # optional path
+    re.IGNORECASE,
+)
+
+TRAILING_PUNCTUATION = ".,;:!?)]}'\""
+
 # Our prototype's cache-expiry policy, not a provider risk rating.
 MAX_FEED_AGE_SECONDS = 2 * 60 * 60
 MAX_URLS = 10
@@ -60,6 +79,63 @@ def _url_key(value):
         return None
 
 
+def _rejoin_split_links(text):
+    """Undo line breaks that OCR or narrow message bubbles put inside links."""
+    # "https://" at the end of a line, rest of the link on the next line.
+    text = re.sub(r"(https?://)\s+(?=\S)", r"\1", text, flags=re.IGNORECASE)
+
+    # "myvips" + newline + ".makeup/vipsbdo" -> "myvips.makeup/vipsbdo"
+    text = re.sub(r"(?<=[A-Za-z0-9])[ \t]*\n[ \t]*(?=\.[A-Za-z])", "", text)
+
+    # "https://bit.ly/bdo-" + newline + "canceltransfer"
+    # "https://digitalbpi.cc/cancel" + newline + "/1r5t8w3y"
+    text = re.sub(
+        r"(https?://[^\s<>\"']*(?:-|/))[ \t]*\n[ \t]*(?=[A-Za-z0-9])",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    )
+    text = re.sub(
+        r"(https?://[^\s<>\"']*[A-Za-z0-9])[ \t]*\n[ \t]*(?=/[A-Za-z0-9])",
+        r"\1",
+        text,
+        flags=re.IGNORECASE,
+    )
+    return text
+
+
+def extract_links(text):
+    """Return link candidates as (written, [forms to check]) pairs.
+
+    Complete http(s) URLs are checked as written. Links written without a
+    scheme (e.g. "bit.ly/abc" or "globe-phl2i.com") are checked as both
+    https:// and http://, because the feed stores complete URLs.
+    """
+    text = _rejoin_split_links(text)
+    links = []
+    seen = set()
+
+    def add(written, forms):
+        written = written.rstrip(TRAILING_PUNCTUATION)
+        if written and written.lower() not in seen:
+            seen.add(written.lower())
+            links.append((written, forms(written)))
+
+    for match in URL_PATTERN.finditer(text):
+        add(match.group(0), lambda url: [url])
+
+    # Remove complete URLs so their domains are not found a second time.
+    remaining = URL_PATTERN.sub(" ", text)
+
+    for match in BARE_LINK_PATTERN.finditer(remaining):
+        add(
+            match.group(0),
+            lambda link: ["https://" + link, "http://" + link],
+        )
+
+    return links
+
+
 def check_message_links(text):
     result = {
         "source": "PhishHunt",
@@ -73,20 +149,21 @@ def check_message_links(text):
         "urls": [],
     }
 
-    # Preserve the order and remove repeated identical URL candidates.
-    urls = list(dict.fromkeys(URL_PATTERN.findall(text)))
+    # Preserve the order and remove repeated identical link candidates.
+    links = extract_links(text)
 
-    if not urls:
+    if not links:
         result.update(
             status="no_urls",
             message=(
-                "No complete HTTP(S) URL was recognized. "
-                "Plain domains and obfuscated links are not checked."
+                "No web link was recognized in this message. "
+                "Obfuscated links (for example with spaces or symbols "
+                "inserted) are not checked."
             ),
         )
         return result
 
-    if len(urls) > MAX_URLS:
+    if len(links) > MAX_URLS:
         result.update(
             status="not_checked",
             message="Too many URLs. Check a message with at most 10 URLs.",
@@ -153,10 +230,10 @@ def check_message_links(text):
     except (OSError, ValueError, TypeError, KeyError):
         return result
 
-    for url in urls:
-        key = _url_key(url)
+    for url, forms in links:
+        keys = [key for key in map(_url_key, forms) if key is not None]
 
-        if key is None:
+        if not keys:
             result["urls"].append({
                 "url": url,
                 "status": "not_checked",
@@ -164,7 +241,9 @@ def check_message_links(text):
             })
             continue
 
-        matches = index.get(key, [])
+        matches = []
+        for key in keys:
+            matches.extend(index.get(key, []))
         evidence = []
 
         # Bound response size while retaining the number of matching records.
@@ -190,6 +269,7 @@ def check_message_links(text):
 
         result["urls"].append({
             "url": url,
+            "scheme_added": forms[0] != url,
             "status": "matched" if matches else "not_listed",
             "matching_records": len(matches),
             "evidence": evidence,
