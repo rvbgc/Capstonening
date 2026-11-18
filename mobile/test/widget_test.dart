@@ -186,4 +186,142 @@ void main() {
       findsOneWidget,
     );
   });
+
+  testWidgets('Flagged result shows links, warning signs and safety steps',
+      (tester) async {
+    useTallScreen(tester);
+
+    final client = MockClient((request) async {
+      final health = healthResponse(request);
+      if (health != null) return health;
+
+      return http.Response(
+        jsonEncode({
+          'label': 'smishing',
+          'message': 'Possible smishing detected.',
+          'threat_intelligence': {
+            'source': 'PhishHunt',
+            'status': 'matched',
+            'message': 'A URL matches the feed.',
+            'urls': [
+              {'url': 'globe-phl2i.com', 'status': 'matched'},
+              {'url': 'bit.ly/abc', 'status': 'not_listed'},
+            ],
+          },
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+    addTearDown(client.close);
+
+    await tester.pumpWidget(SmishGuardApp(client: client));
+    await tester.enterText(
+      find.byType(TextField),
+      'GLOBE reminds you that your reward points will expire today: '
+      'globe-phl2i.com or bit.ly/abc',
+    );
+    await tapAnalyzeButton(tester);
+
+    expect(find.byKey(const ValueKey('checked-links')), findsOneWidget);
+    expect(find.textContaining('globe-phl2i.com'), findsWidgets);
+    expect(find.textContaining('Listed in the PhishHunt feed'), findsOneWidget);
+    expect(
+      find.textContaining('Not in the feed (not proof it is safe)'),
+      findsOneWidget,
+    );
+
+    expect(find.byKey(const ValueKey('warning-signs-card')), findsOneWidget);
+    expect(find.byKey(const ValueKey('warning-sign-link')), findsOneWidget);
+    expect(find.byKey(const ValueKey('warning-sign-urgency')), findsOneWidget);
+    expect(find.text('Mentions Globe'), findsOneWidget);
+
+    expect(find.byKey(const ValueKey('safety-steps-card')), findsOneWidget);
+  });
+
+  testWidgets('Not-detected result hides safety steps', (tester) async {
+    useTallScreen(tester);
+
+    final client = MockClient((request) async {
+      final health = healthResponse(request);
+      if (health != null) return health;
+
+      return http.Response(
+        jsonEncode({
+          'label': 'non_smishing',
+          'message': 'Smishing was not detected.',
+          'threat_intelligence': {
+            'source': 'PhishHunt',
+            'status': 'no_urls',
+            'message': 'No web link was recognized in this message.',
+            'urls': [],
+          },
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+    addTearDown(client.close);
+
+    await tester.pumpWidget(SmishGuardApp(client: client));
+    await tester.enterText(
+      find.byType(TextField),
+      'See you at the library tomorrow.',
+    );
+    await tapAnalyzeButton(tester);
+
+    expect(find.byKey(const ValueKey('warning-signs-card')), findsOneWidget);
+    expect(find.text('No common warning signs were found.'), findsOneWidget);
+    expect(find.byKey(const ValueKey('checked-links')), findsNothing);
+    expect(find.byKey(const ValueKey('safety-steps-card')), findsNothing);
+  });
+
+  testWidgets('Example buttons fill the message and Clear empties it',
+      (tester) async {
+    useTallScreen(tester);
+
+    final client = MockClient((request) async {
+      return healthResponse(request) ?? http.Response('{}', 500);
+    });
+    addTearDown(client.close);
+
+    await tester.pumpWidget(SmishGuardApp(client: client));
+    await tester.pumpAndSettle();
+
+    expect(find.byKey(const ValueKey('clear-message-button')), findsNothing);
+
+    await tester.tap(find.byKey(const ValueKey('example-smishing-button')));
+    await tester.pumpAndSettle();
+
+    final field = tester.widget<TextField>(find.byType(TextField));
+    expect(field.controller!.text, contains('bdo-secure-verify.top'));
+
+    await tester.tap(find.byKey(const ValueKey('example-normal-button')));
+    await tester.pumpAndSettle();
+    expect(field.controller!.text, contains('group meeting'));
+
+    await tester.tap(find.byKey(const ValueKey('clear-message-button')));
+    await tester.pumpAndSettle();
+    expect(field.controller!.text, isEmpty);
+    expect(find.byKey(const ValueKey('clear-message-button')), findsNothing);
+  });
+
+  testWidgets('About screen opens from the app bar', (tester) async {
+    useTallScreen(tester);
+
+    final client = MockClient((request) async {
+      return healthResponse(request) ?? http.Response('{}', 500);
+    });
+    addTearDown(client.close);
+
+    await tester.pumpWidget(SmishGuardApp(client: client));
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.byKey(const ValueKey('about-button')));
+    await tester.pumpAndSettle();
+
+    expect(find.text('About SMISHGUARD'), findsOneWidget);
+    expect(find.text('Your data'), findsOneWidget);
+    expect(find.text('Limitations'), findsOneWidget);
+  });
 }

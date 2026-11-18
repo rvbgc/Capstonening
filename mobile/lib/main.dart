@@ -4,11 +4,13 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 
+import 'about_screen.dart';
 import 'account_screen.dart';
 import 'account_service.dart';
 import 'api_config.dart';
 import 'backend_status.dart';
 import 'screenshot_input.dart';
+import 'warning_signs.dart';
 
 void main() {
   runApp(const SmishGuardApp());
@@ -28,6 +30,14 @@ class SmishGuardApp extends StatelessWidget {
         colorScheme: ColorScheme.fromSeed(seedColor: Colors.teal),
         useMaterial3: true,
       ),
+      darkTheme: ThemeData(
+        colorScheme: ColorScheme.fromSeed(
+          seedColor: Colors.teal,
+          brightness: Brightness.dark,
+        ),
+        useMaterial3: true,
+      ),
+      themeMode: ThemeMode.system,
       home: MessageScreen(client: client),
     );
   }
@@ -42,8 +52,16 @@ class MessageScreen extends StatefulWidget {
   State<MessageScreen> createState() => _MessageScreenState();
 }
 
-/// A successful analysis, split into the SMS model result and the
-/// separate PhishHunt URL check.
+/// One link found by the URL check and its result.
+class _CheckedLink {
+  const _CheckedLink(this.url, this.status);
+
+  final String url;
+  final String status;
+}
+
+/// A successful analysis: the SMS model result, the separate PhishHunt
+/// URL check, and rule-based warning signs.
 class _Assessment {
   const _Assessment({
     required this.flagged,
@@ -52,6 +70,8 @@ class _Assessment {
     required this.urlMatched,
     required this.urlHeading,
     required this.urlBody,
+    required this.links,
+    required this.warningSigns,
     this.saveNote,
   });
 
@@ -61,8 +81,25 @@ class _Assessment {
   final bool urlMatched;
   final String urlHeading;
   final String urlBody;
+  final List<_CheckedLink> links;
+  final List<WarningSign> warningSigns;
   final String? saveNote;
 }
+
+/// Sample messages for trying the app. The links are made up.
+const _smishingExample =
+    'BDO: Your account has been temporarily locked. Verify your details '
+    'today to avoid suspension: bdo-secure-verify.top';
+
+const _normalExample =
+    'Hi! Our group meeting is moved to 3 PM tomorrow at the library. '
+    'Please bring your laptop.';
+
+const _linkStatusLabels = <String, String>{
+  'matched': 'Listed in the PhishHunt feed',
+  'not_listed': 'Not in the feed (not proof it is safe)',
+  'not_checked': 'Could not be checked',
+};
 
 class _MessageScreenState extends State<MessageScreen> {
   final _messageController = TextEditingController();
@@ -356,6 +393,7 @@ class _MessageScreenState extends State<MessageScreen> {
         var urlMessage = 'No usable URL-check result was received. '
             'The safety of any links has not been established.';
         var urlMatched = false;
+        final links = <_CheckedLink>[];
 
         final threatInfo = data['threat_intelligence'];
 
@@ -371,6 +409,21 @@ class _MessageScreenState extends State<MessageScreen> {
             urlHeading = urlHeadings[urlStatus]!;
             urlMessage = backendUrlMessage.trim();
             urlMatched = urlStatus == 'matched';
+          }
+
+          final rawLinks = threatInfo['urls'];
+
+          if (rawLinks is List) {
+            for (final item in rawLinks) {
+              if (item is Map<String, dynamic> &&
+                  item['url'] is String &&
+                  item['status'] is String) {
+                links.add(_CheckedLink(
+                  item['url'] as String,
+                  item['status'] as String,
+                ));
+              }
+            }
           }
         }
 
@@ -396,6 +449,8 @@ class _MessageScreenState extends State<MessageScreen> {
           urlMatched: urlMatched,
           urlHeading: urlHeading,
           urlBody: urlMessage,
+          links: links,
+          warningSigns: findWarningSigns(text),
           saveNote: saveNote,
         );
       } else if (response.statusCode == 401) {
@@ -456,6 +511,25 @@ class _MessageScreenState extends State<MessageScreen> {
     });
   }
 
+  /// Replaces the message text and clears any previous results.
+  void _setMessage(String text) {
+    setState(() {
+      _messageController.text = text;
+      _inputMethod = 'text';
+      _error = null;
+      _result = null;
+      _assessment = null;
+      _reportResult = null;
+    });
+  }
+
+  void _openAbout() {
+    FocusScope.of(context).unfocus();
+    Navigator.of(context).push<void>(
+      MaterialPageRoute(builder: (_) => const AboutScreen()),
+    );
+  }
+
   // ---------------------------------------------------------------------------
   // UI helpers
   // ---------------------------------------------------------------------------
@@ -507,6 +581,7 @@ class _MessageScreenState extends State<MessageScreen> {
     required String body,
     List<String> notes = const [],
     bool highlight = false,
+    Widget? extra,
   }) {
     final theme = Theme.of(context);
     final scheme = theme.colorScheme;
@@ -549,6 +624,13 @@ class _MessageScreenState extends State<MessageScreen> {
                 body,
                 style: theme.textTheme.bodyMedium?.copyWith(color: foreground),
               ),
+              if (extra != null) ...[
+                const SizedBox(height: 12),
+                DefaultTextStyle.merge(
+                  style: TextStyle(color: foreground),
+                  child: extra,
+                ),
+              ],
               for (final note in notes) ...[
                 const SizedBox(height: 8),
                 Text(
@@ -581,6 +663,182 @@ class _MessageScreenState extends State<MessageScreen> {
     );
   }
 
+  /// Lists each link the URL check found, with its own result.
+  Widget _linkList(List<_CheckedLink> links) {
+    return Column(
+      key: const ValueKey('checked-links'),
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        for (final link in links)
+          Padding(
+            padding: const EdgeInsets.only(top: 4),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Icon(
+                  link.status == 'matched'
+                      ? Icons.dangerous_outlined
+                      : Icons.link,
+                  size: 18,
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text.rich(
+                    TextSpan(
+                      children: [
+                        TextSpan(
+                          text: link.url,
+                          style: const TextStyle(fontWeight: FontWeight.w600),
+                        ),
+                        TextSpan(
+                          text: '\n${_linkStatusLabels[link.status] ?? link.status}',
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+
+  /// Rule-based warning signs, clearly separated from the model result.
+  Widget _warningSignsCard(List<WarningSign> signs) {
+    final theme = Theme.of(context);
+
+    return Card(
+      key: const ValueKey('warning-signs-card'),
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.rule, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'Warning signs in the message',
+                    style: theme.textTheme.labelLarge,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 8),
+            if (signs.isEmpty)
+              const Text('No common warning signs were found.')
+            else
+              for (final sign in signs)
+                Padding(
+                  key: ValueKey('warning-sign-${sign.id}'),
+                  padding: const EdgeInsets.only(top: 8),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(
+                        Icons.error_outline,
+                        size: 20,
+                        color: theme.colorScheme.error,
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              sign.title,
+                              style: const TextStyle(
+                                fontWeight: FontWeight.w600,
+                              ),
+                            ),
+                            Text(sign.detail),
+                          ],
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+            const SizedBox(height: 12),
+            Text(
+              'These are simple keyword checks for common smishing patterns, '
+              "not the model's reasoning. Genuine messages can contain them, "
+              'and a scam can have none.',
+              style: theme.textTheme.bodySmall?.copyWith(
+                fontStyle: FontStyle.italic,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// Practical next steps, shown when the message looks suspicious.
+  Widget _safetyStepsCard() {
+    final theme = Theme.of(context);
+
+    const steps = [
+      "Don't tap the link or reply to the message.",
+      'Never share your OTP, PIN or password. Banks and e-wallets never ask '
+          'for them by text.',
+      'Check directly through the official app, website or hotline you '
+          'already know, not the contact details in the message.',
+      'If you already clicked or shared details, contact your bank or '
+          'e-wallet right away and change your password.',
+      'Report scam texts to the CICC hotline 1326.',
+    ];
+
+    return Card(
+      key: const ValueKey('safety-steps-card'),
+      margin: EdgeInsets.zero,
+      color: theme.colorScheme.secondaryContainer,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: DefaultTextStyle.merge(
+          style: TextStyle(color: theme.colorScheme.onSecondaryContainer),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(
+                    Icons.health_and_safety_outlined,
+                    color: theme.colorScheme.onSecondaryContainer,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      'What to do',
+                      style: theme.textTheme.titleMedium?.copyWith(
+                        color: theme.colorScheme.onSecondaryContainer,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 4),
+              for (final (index, step) in steps.indexed)
+                Padding(
+                  padding: const EdgeInsets.only(top: 6),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text('${index + 1}.  '),
+                      Expanded(child: Text(step)),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -593,6 +851,12 @@ class _MessageScreenState extends State<MessageScreen> {
         title: const Text('SMISHGUARD'),
         centerTitle: true,
         actions: [
+          IconButton(
+            key: const ValueKey('about-button'),
+            tooltip: 'About SMISHGUARD',
+            onPressed: _openAbout,
+            icon: const Icon(Icons.info_outline),
+          ),
           IconButton(
             key: const ValueKey('account-button'),
             tooltip: signedIn
@@ -688,6 +952,28 @@ class _MessageScreenState extends State<MessageScreen> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
+                    Wrap(
+                      spacing: 8,
+                      runSpacing: 4,
+                      children: [
+                        ActionChip(
+                          key: const ValueKey('example-smishing-button'),
+                          avatar: const Icon(Icons.science_outlined, size: 18),
+                          label: const Text('Try a smishing example'),
+                          onPressed: busy
+                              ? null
+                              : () => _setMessage(_smishingExample),
+                        ),
+                        ActionChip(
+                          key: const ValueKey('example-normal-button'),
+                          avatar: const Icon(Icons.science_outlined, size: 18),
+                          label: const Text('Try a normal example'),
+                          onPressed:
+                              busy ? null : () => _setMessage(_normalExample),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
                     TextField(
                       controller: _messageController,
                       readOnly: busy,
@@ -715,6 +1001,16 @@ class _MessageScreenState extends State<MessageScreen> {
                         errorText: _error,
                       ),
                     ),
+                    if (_messageController.text.isNotEmpty && !busy)
+                      Align(
+                        alignment: Alignment.centerRight,
+                        child: TextButton.icon(
+                          key: const ValueKey('clear-message-button'),
+                          onPressed: () => _setMessage(''),
+                          icon: const Icon(Icons.clear, size: 18),
+                          label: const Text('Clear'),
+                        ),
+                      ),
                     if (signedIn)
                       CheckboxListTile(
                         key: const ValueKey('save-history-checkbox'),
@@ -804,7 +1100,16 @@ class _MessageScreenState extends State<MessageScreen> {
                   heading: assessment.urlHeading,
                   body: assessment.urlBody,
                   highlight: assessment.urlMatched,
+                  extra: assessment.links.isEmpty
+                      ? null
+                      : _linkList(assessment.links),
                 ),
+                const SizedBox(height: 12),
+                _warningSignsCard(assessment.warningSigns),
+                if (assessment.flagged || assessment.urlMatched) ...[
+                  const SizedBox(height: 12),
+                  _safetyStepsCard(),
+                ],
               ],
               if (_result != null) ...[
                 const SizedBox(height: 24),

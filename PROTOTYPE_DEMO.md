@@ -17,7 +17,10 @@ limitations to state honestly during the presentation.
 | Typed message check | User pastes an English SMS (1–5,000 characters) and taps **Analyze Message**. |
 | Screenshot input | User selects a PNG/JPEG screenshot (≤ 5 MB). The backend runs Tesseract OCR and returns editable text for the user to review before analysis. |
 | SMS assessment | TF-IDF + linear SVM model returns `smishing` or `non_smishing`, with general safety advice. |
-| URL check | Links in the message are compared with a cached PhishHunt feed. Shown in a **separate card** from the model result. |
+| URL check | Links in the message are compared with a cached PhishHunt feed. Shown in a **separate card** from the model result, listing each link and its own result. |
+| Warning signs | Rule-based checks on the phone list common smishing patterns found in the message (link, shortened link, OTP/password request, payment, personal details, prize, urgency, brand name). Clearly labelled as not the model's reasoning. |
+| What to do | Practical safety steps shown when the model flags the message or a link matches the feed. |
+| Examples and About | "Try an example" buttons for quick demos, a Clear button, and an About screen explaining the checks, data handling and limitations. |
 | Reports | User can submit a message for review after a consent dialog. Reports start as **pending** and are reviewed through protected admin API endpoints. |
 | Accounts | Register, sign in, sign out. Passwords are hashed; sessions expire after 12 hours. |
 | Private history | Opt-in per analysis. Latest 100 saved analyses per account. View, delete one, clear all. |
@@ -145,11 +148,13 @@ If the PC's address changes (different Wi-Fi), rebuild with the new address.
 
 1. **Server status.** Open the app. It checks the server automatically:
    *"Server connected. Model is available."*
-2. **Typed smishing example.** Paste a message with a link, e.g. a fake
-   parcel-fee message. Tap **Analyze Message**. Point out the two separate
-   cards:
+2. **Typed smishing example.** Tap **Try a smishing example** (or paste a
+   message with a link) and tap **Analyze Message**. Point out the cards:
    - **SMS assessment** (model result, marked preliminary)
-   - **URL check (PhishHunt)** (feed result; *not listed* does not mean safe)
+   - **URL check (PhishHunt)** with each link and its result (*not listed*
+     does not mean safe)
+   - **Warning signs** (rule-based, not the model's reasoning)
+   - **What to do** (safety steps, shown for suspicious results)
 3. **Ordinary message.** Analyze a normal message to show the neutral
    result. Note that "not detected" does not confirm the message is safe.
 4. **Screenshot input.** Tap **Select screenshot**, choose an SMS
@@ -162,7 +167,9 @@ If the PC's address changes (different Wi-Fi), rebuild with the new address.
    in history. Show that unticked analyses are not saved.
 7. **Privacy controls.** Delete one history entry; mention **Clear my
    history** and **Delete my account** (password-confirmed).
-8. **Admin review (optional).** Show the protected report endpoints at
+8. **About screen.** Tap the **ⓘ** icon to show how the checks work, how
+   data is stored, and the limitations.
+9. **Admin review (optional).** Show the protected report endpoints at
    <http://127.0.0.1:8000/docs> (admin token required).
 
 ---
@@ -275,6 +282,10 @@ public.
   HTTPS, no database encryption at rest.
 - **No password recovery.**
 - **Admin review is API-only**; there is no admin dashboard.
+- **Warning signs are keyword rules.** They can appear in genuine messages
+  and be absent from scams; they are not an explanation of the model.
+- **Tested on the Android emulator only.** iOS was not built or tested
+  (building for iOS requires a Mac with Xcode).
 - **Reports are not verified** and are not automatically used as training
   data.
 
