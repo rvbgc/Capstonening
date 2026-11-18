@@ -41,13 +41,41 @@ class MessageScreen extends StatefulWidget {
   State<MessageScreen> createState() => _MessageScreenState();
 }
 
+/// A successful analysis, split into the SMS model result and the
+/// separate PhishHunt URL check.
+class _Assessment {
+  const _Assessment({
+    required this.flagged,
+    required this.smsHeading,
+    required this.smsBody,
+    required this.urlMatched,
+    required this.urlHeading,
+    required this.urlBody,
+    this.saveNote,
+  });
+
+  final bool flagged;
+  final String smsHeading;
+  final String smsBody;
+  final bool urlMatched;
+  final String urlHeading;
+  final String urlBody;
+  final String? saveNote;
+}
+
 class _MessageScreenState extends State<MessageScreen> {
   final _messageController = TextEditingController();
   late final http.Client _client;
   late final AccountService _account;
 
   String? _error;
+
+  /// Status or error message shown when no assessment was made.
   String? _result;
+
+  /// Successful analysis, shown as two separate cards.
+  _Assessment? _assessment;
+
   bool _loading = false;
   bool _ocrLoading = false;
   bool _reporting = false;
@@ -77,6 +105,8 @@ class _MessageScreenState extends State<MessageScreen> {
   Future<void> _openAccount() async {
     if (_loading || _ocrLoading || _reporting || _accountOpening) return;
 
+    FocusScope.of(context).unfocus();
+
     final previousUserId = _account.userId;
 
     setState(() => _accountOpening = true);
@@ -101,6 +131,7 @@ class _MessageScreenState extends State<MessageScreen> {
             _inputMethod = 'text';
             _error = null;
             _result = null;
+            _assessment = null;
             _reportResult = null;
           }
         });
@@ -256,17 +287,22 @@ class _MessageScreenState extends State<MessageScreen> {
       setState(() {
         _error = 'Enter a message first.';
         _result = null;
+        _assessment = null;
       });
       return;
     }
 
+    FocusScope.of(context).unfocus();
+
     setState(() {
       _error = null;
       _result = null;
+      _assessment = null;
       _loading = true;
     });
 
-    String result;
+    String? result;
+    _Assessment? assessment;
 
     try {
       final response = await _client
@@ -303,9 +339,7 @@ class _MessageScreenState extends State<MessageScreen> {
           throw const FormatException('Unknown classification label.');
         }
 
-        final heading = label == 'smishing'
-            ? 'Possible smishing detected'
-            : 'Smishing not detected';
+        final flagged = label == 'smishing';
 
         const urlHeadings = <String, String>{
           'matched': 'URL match in the PhishHunt feed',
@@ -320,6 +354,7 @@ class _MessageScreenState extends State<MessageScreen> {
         var urlHeading = 'URL check unavailable';
         var urlMessage = 'No usable URL-check result was received. '
             'The safety of any links has not been established.';
+        var urlMatched = false;
 
         final threatInfo = data['threat_intelligence'];
 
@@ -334,29 +369,34 @@ class _MessageScreenState extends State<MessageScreen> {
               backendUrlMessage.trim().isNotEmpty) {
             urlHeading = urlHeadings[urlStatus]!;
             urlMessage = backendUrlMessage.trim();
+            urlMatched = urlStatus == 'matched';
           }
         }
 
-        result = 'SMS assessment\n'
-            '$heading\n\n'
-            '$message\n\n'
-            'URL check\n'
-            '$urlHeading\n\n'
-            '$urlMessage\n\n'
-            'Preliminary prototype result.';
+        String? saveNote;
 
         if (saveRequested) {
           final history = data['history'];
 
           if (history is Map<String, dynamic> &&
               history['status'] == 'saved') {
-            result = '$result\n\nSaved to your private history.';
+            saveNote = 'Saved to your private history.';
           } else {
-            result = '$result\n\n'
-                'Saving could not be confirmed. '
+            saveNote = 'Saving could not be confirmed. '
                 'Check your history before retrying.';
           }
         }
+
+        assessment = _Assessment(
+          flagged: flagged,
+          smsHeading:
+              flagged ? 'Possible smishing detected' : 'Smishing not detected',
+          smsBody: message.trim(),
+          urlMatched: urlMatched,
+          urlHeading: urlHeading,
+          urlBody: urlMessage,
+          saveNote: saveNote,
+        );
       } else if (response.statusCode == 401) {
         await _account.forgetSession();
 
@@ -386,16 +426,19 @@ class _MessageScreenState extends State<MessageScreen> {
             'No assessment is available.';
       }
     } on TimeoutException {
+      assessment = null;
       result = saveRequested
           ? 'The request timed out. Saving could not be confirmed. '
               'Check your history before retrying.'
           : 'The request timed out. No assessment was received.';
     } on http.ClientException {
+      assessment = null;
       result = saveRequested
           ? 'The connection was interrupted. Saving could not be confirmed. '
               'Check your history before retrying.'
           : 'Cannot reach the server. Check your connection and retry.';
     } catch (_) {
+      assessment = null;
       result = saveRequested
           ? 'The response could not be processed. Saving could not be '
               'confirmed. Check your history before retrying.'
@@ -408,12 +451,141 @@ class _MessageScreenState extends State<MessageScreen> {
     setState(() {
       _loading = false;
       _result = result;
+      _assessment = assessment;
     });
+  }
+
+  // ---------------------------------------------------------------------------
+  // UI helpers
+  // ---------------------------------------------------------------------------
+
+  /// A titled section card used for the input and report areas.
+  Widget _section({
+    required IconData icon,
+    required String title,
+    String? subtitle,
+    required Widget child,
+  }) {
+    final theme = Theme.of(context);
+
+    return Card(
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Icon(icon, color: theme.colorScheme.primary),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(title, style: theme.textTheme.titleMedium),
+                ),
+              ],
+            ),
+            if (subtitle != null) ...[
+              const SizedBox(height: 4),
+              Text(subtitle, style: theme.textTheme.bodySmall),
+            ],
+            const SizedBox(height: 12),
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// A result card with a title, a bold finding and explanatory text.
+  /// [highlight] uses the error colours for findings that need attention.
+  Widget _findingCard({
+    required Key key,
+    required IconData icon,
+    required String title,
+    required String heading,
+    required String body,
+    List<String> notes = const [],
+    bool highlight = false,
+  }) {
+    final theme = Theme.of(context);
+    final scheme = theme.colorScheme;
+    final foreground = highlight ? scheme.onErrorContainer : null;
+
+    return Card(
+      key: key,
+      margin: EdgeInsets.zero,
+      color: highlight ? scheme.errorContainer : null,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Semantics(
+          liveRegion: true,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Row(
+                children: [
+                  Icon(icon, color: foreground ?? scheme.primary),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      title,
+                      style: theme.textTheme.labelLarge
+                          ?.copyWith(color: foreground),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Text(
+                heading,
+                style: theme.textTheme.titleMedium?.copyWith(
+                  fontWeight: FontWeight.bold,
+                  color: foreground,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                body,
+                style: theme.textTheme.bodyMedium?.copyWith(color: foreground),
+              ),
+              for (final note in notes) ...[
+                const SizedBox(height: 8),
+                Text(
+                  note,
+                  style: theme.textTheme.bodySmall?.copyWith(
+                    color: foreground,
+                    fontStyle: FontStyle.italic,
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// A plain card for status, error and report messages.
+  Widget _messageCard(String text, {Key? key}) {
+    return Card(
+      key: key,
+      margin: EdgeInsets.zero,
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Semantics(
+          liveRegion: true,
+          child: Text(text),
+        ),
+      ),
+    );
   }
 
   @override
   Widget build(BuildContext context) {
+    final theme = Theme.of(context);
     final busy = _loading || _ocrLoading || _reporting;
+    final signedIn = _account.isSignedIn;
+    final assessment = _assessment;
 
     return Scaffold(
       appBar: AppBar(
@@ -422,155 +594,271 @@ class _MessageScreenState extends State<MessageScreen> {
         actions: [
           IconButton(
             key: const ValueKey('account-button'),
-            tooltip: 'Account and history',
+            tooltip: signedIn
+                ? 'Account and history (signed in)'
+                : 'Account and history',
             onPressed: (busy || _accountOpening) ? null : _openAccount,
-            icon: Icon(
-              _account.isSignedIn
-                  ? Icons.account_circle
-                  : Icons.account_circle_outlined,
+            icon: Badge(
+              isLabelVisible: signedIn,
+              child: Icon(
+                signedIn
+                    ? Icons.account_circle
+                    : Icons.account_circle_outlined,
+              ),
             ),
           ),
         ],
       ),
       body: SafeArea(
-        child: ListView(
-          padding: const EdgeInsets.all(24),
-          children: [
-            const BackendStatus(),
-            const Icon(
-              Icons.shield_outlined,
-              size: 64,
-              color: Colors.teal,
-            ),
-            const SizedBox(height: 20),
-            Text(
-              'Check a suspicious message',
-              style: Theme.of(context).textTheme.headlineSmall,
-            ),
-            const SizedBox(height: 12),
-            const Text(
-              'Type or paste an English SMS below. '
-              'Remove passwords, OTPs, and account details first.',
-            ),
-            const SizedBox(height: 24),
-            ScreenshotInput(
-              enabled: !_loading && !_reporting,
-              onBusyChanged: (busy) {
-                if (!mounted) return;
+        child: GestureDetector(
+          // Tapping empty space closes the keyboard.
+          behavior: HitTestBehavior.translucent,
+          onTap: () => FocusScope.of(context).unfocus(),
+          child: ListView(
+            keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
+            padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+            children: [
+              const BackendStatus(),
+              const SizedBox(height: 8),
 
-                setState(() {
-                  _ocrLoading = busy;
-                });
-              },
-              onTextExtracted: (text) {
-                if (!mounted) return;
-
-                setState(() {
-                  _messageController.text = text;
-                  _inputMethod = 'screenshot';
-                  _error = null;
-                  _result = null;
-                  _reportResult = null;
-                });
-              },
-            ),
-            TextField(
-              controller: _messageController,
-              readOnly: busy,
-              minLines: 6,
-              maxLines: 12,
-              maxLength: 5000,
-              onChanged: (value) {
-                setState(() {
-                  if (value.trim().isEmpty) {
-                    _inputMethod = 'text';
-                  }
-
-                  _error = null;
-                  _result = null;
-                  _reportResult = null;
-                });
-              },
-              decoration: InputDecoration(
-                labelText: 'SMS message',
-                hintText: 'Paste the message here...',
-                alignLabelWithHint: true,
-                border: const OutlineInputBorder(),
-                errorText: _error,
+              // ---------------- Header ----------------
+              Row(
+                children: [
+                  Icon(
+                    Icons.shield_outlined,
+                    size: 40,
+                    color: theme.colorScheme.primary,
+                  ),
+                  const SizedBox(width: 12),
+                  Expanded(
+                    child: Text(
+                      'Check a suspicious message',
+                      style: theme.textTheme.headlineSmall,
+                    ),
+                  ),
+                ],
               ),
-            ),
-            const SizedBox(height: 16),
-            if (_account.isSignedIn)
-              CheckboxListTile(
-                key: const ValueKey('save-history-checkbox'),
-                contentPadding: EdgeInsets.zero,
-                controlAffinity: ListTileControlAffinity.leading,
-                title: const Text('Save this analysis to my history'),
-                subtitle: const Text(
-                  'Saves the message and result to your account when you '
-                  'tap Analyze. Your latest 100 saved analyses are retained.',
+              const SizedBox(height: 8),
+              const Text(
+                'Type or paste an English SMS below. '
+                'Remove passwords, OTPs, and account details first.',
+              ),
+              const SizedBox(height: 20),
+
+              // ---------------- Screenshot input ----------------
+              _section(
+                icon: Icons.image_outlined,
+                title: 'Upload a screenshot (optional)',
+                subtitle: 'The text found in the screenshot is placed in '
+                    'the message box below for you to review and edit.',
+                child: ScreenshotInput(
+                  enabled: !_loading && !_reporting,
+                  onBusyChanged: (busy) {
+                    if (!mounted) return;
+
+                    setState(() {
+                      _ocrLoading = busy;
+                    });
+                  },
+                  onTextExtracted: (text) {
+                    if (!mounted) return;
+
+                    setState(() {
+                      _messageController.text = text;
+                      _inputMethod = 'screenshot';
+                      _error = null;
+                      _result = null;
+                      _assessment = null;
+                      _reportResult = null;
+                    });
+                  },
                 ),
-                value: _saveHistory,
-                onChanged: busy
-                    ? null
-                    : (value) {
+              ),
+              const SizedBox(height: 16),
+
+              // ---------------- Typed input + analyze ----------------
+              _section(
+                icon: Icons.sms_outlined,
+                title: 'Message text',
+                subtitle: _inputMethod == 'screenshot'
+                    ? 'Extracted from your screenshot. Check that it '
+                        'matches the original message.'
+                    : 'Type or paste the message you received.',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    TextField(
+                      controller: _messageController,
+                      readOnly: busy,
+                      minLines: 6,
+                      maxLines: 12,
+                      maxLength: 5000,
+                      keyboardType: TextInputType.multiline,
+                      onChanged: (value) {
                         setState(() {
-                          _saveHistory = value ?? false;
+                          if (value.trim().isEmpty) {
+                            _inputMethod = 'text';
+                          }
+
+                          _error = null;
+                          _result = null;
+                          _assessment = null;
+                          _reportResult = null;
                         });
                       },
-              ),
-            FilledButton.icon(
-              key: const ValueKey('analyze-message-button'),
-              onPressed: busy ? null : _analyze,
-              icon: _loading
-                  ? const SizedBox(
-                      width: 18,
-                      height: 18,
-                      child: CircularProgressIndicator(strokeWidth: 2),
-                    )
-                  : const Icon(Icons.search),
-              label: Text(_loading ? 'Submitting...' : 'Analyze Message'),
-            ),
-            if (_result != null) ...[
-              const SizedBox(height: 20),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Semantics(
-                    liveRegion: true,
-                    child: Text(_result!),
-                  ),
+                      decoration: InputDecoration(
+                        labelText: 'SMS message',
+                        hintText: 'Paste the message here...',
+                        alignLabelWithHint: true,
+                        border: const OutlineInputBorder(),
+                        errorText: _error,
+                      ),
+                    ),
+                    if (signedIn)
+                      CheckboxListTile(
+                        key: const ValueKey('save-history-checkbox'),
+                        contentPadding: EdgeInsets.zero,
+                        controlAffinity: ListTileControlAffinity.leading,
+                        title: const Text('Save this analysis to my history'),
+                        subtitle: const Text(
+                          'Saves the message and result to your account when '
+                          'you tap Analyze. Your latest 100 saved analyses '
+                          'are retained.',
+                        ),
+                        value: _saveHistory,
+                        onChanged: busy
+                            ? null
+                            : (value) {
+                                setState(() {
+                                  _saveHistory = value ?? false;
+                                });
+                              },
+                      ),
+                    const SizedBox(height: 8),
+                    FilledButton.icon(
+                      key: const ValueKey('analyze-message-button'),
+                      onPressed: busy ? null : _analyze,
+                      style: FilledButton.styleFrom(
+                        minimumSize: const Size.fromHeight(48),
+                      ),
+                      icon: _loading
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.search),
+                      label: Text(
+                        _loading ? 'Submitting...' : 'Analyze Message',
+                      ),
+                    ),
+                    if (_loading) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Checking the message and any links. '
+                        'This can take up to 30 seconds.',
+                        style: theme.textTheme.bodySmall,
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                    if (_ocrLoading) ...[
+                      const SizedBox(height: 8),
+                      Text(
+                        'Reading text from the screenshot...',
+                        style: theme.textTheme.bodySmall,
+                        textAlign: TextAlign.center,
+                      ),
+                    ],
+                  ],
                 ),
               ),
-            ],
-            const SizedBox(height: 16),
-            OutlinedButton.icon(
-              key: const ValueKey('report-message-button'),
-              onPressed: (busy || _messageController.text.trim().isEmpty)
-                  ? null
-                  : _reportMessage,
-              icon: const Icon(Icons.flag_outlined),
-              label: Text(_reporting ? 'Please wait...' : 'Report Message'),
-            ),
-            if (_reportResult != null) ...[
-              const SizedBox(height: 16),
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(16),
-                  child: Semantics(
-                    liveRegion: true,
-                    child: Text(_reportResult!),
-                  ),
+
+              // ---------------- Results ----------------
+              if (assessment != null) ...[
+                const SizedBox(height: 24),
+                Text('Results', style: theme.textTheme.titleLarge),
+                const SizedBox(height: 8),
+                _findingCard(
+                  key: const ValueKey('sms-assessment-card'),
+                  icon: assessment.flagged
+                      ? Icons.warning_amber_rounded
+                      : Icons.sms_outlined,
+                  title: 'SMS assessment',
+                  heading: assessment.smsHeading,
+                  body: assessment.smsBody,
+                  highlight: assessment.flagged,
+                  notes: [
+                    'Preliminary prototype result. The model can be wrong.',
+                    if (assessment.saveNote != null) assessment.saveNote!,
+                  ],
+                ),
+                const SizedBox(height: 12),
+                _findingCard(
+                  key: const ValueKey('url-check-card'),
+                  icon: assessment.urlMatched
+                      ? Icons.dangerous_outlined
+                      : Icons.link,
+                  title: 'URL check (PhishHunt)',
+                  heading: assessment.urlHeading,
+                  body: assessment.urlBody,
+                  highlight: assessment.urlMatched,
+                ),
+              ],
+              if (_result != null) ...[
+                const SizedBox(height: 24),
+                _messageCard(_result!, key: const ValueKey('status-card')),
+              ],
+
+              // ---------------- Report ----------------
+              const SizedBox(height: 24),
+              _section(
+                icon: Icons.flag_outlined,
+                title: 'Report this message',
+                subtitle: 'Send it to SMISHGUARD for review. '
+                    'Reports stay pending until reviewed.',
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    OutlinedButton.icon(
+                      key: const ValueKey('report-message-button'),
+                      onPressed:
+                          (busy || _messageController.text.trim().isEmpty)
+                              ? null
+                              : _reportMessage,
+                      icon: _reporting
+                          ? const SizedBox(
+                              width: 18,
+                              height: 18,
+                              child:
+                                  CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : const Icon(Icons.flag_outlined),
+                      label: Text(
+                        _reporting ? 'Please wait...' : 'Report Message',
+                      ),
+                    ),
+                    if (_reportResult != null) ...[
+                      const SizedBox(height: 12),
+                      _messageCard(
+                        _reportResult!,
+                        key: const ValueKey('report-result-card'),
+                      ),
+                    ],
+                  ],
                 ),
               ),
+
+              // ---------------- Footer ----------------
+              const SizedBox(height: 24),
+              Text(
+                'Prototype results may be incorrect. '
+                'Verify suspicious messages through official channels.',
+                textAlign: TextAlign.center,
+                style: theme.textTheme.bodySmall,
+              ),
             ],
-            const SizedBox(height: 16),
-            const Text(
-              'Prototype results may be incorrect. '
-              'Verify suspicious messages through official channels.',
-              textAlign: TextAlign.center,
-            ),
-          ],
+          ),
         ),
       ),
     );
