@@ -6,46 +6,45 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:smishguard/main.dart';
 
-/// Scrolls the Analyze button into view and taps it.
+/// Makes the test screen tall enough that nothing needs scrolling.
+void useTallScreen(WidgetTester tester) {
+  tester.view.physicalSize = const Size(1080, 4000);
+  tester.view.devicePixelRatio = 1.0;
+  addTearDown(tester.view.reset);
+}
+
 Future<void> tapAnalyzeButton(WidgetTester tester) async {
-  final analyzeButton = find.text('Analyze Message');
+  final button = find.byKey(const ValueKey('analyze-message-button'));
 
-  await tester.scrollUntilVisible(
-    analyzeButton,
-    200,
-    scrollable: find.byType(Scrollable).first,
-    maxScrolls: 30,
-  );
-
+  await tester.ensureVisible(button);
   await tester.pumpAndSettle();
-  expect(analyzeButton, findsOneWidget);
+  expect(button, findsOneWidget);
 
-  await tester.tap(analyzeButton);
+  await tester.tap(button);
   await tester.pumpAndSettle();
 }
 
 void main() {
   testWidgets('Empty message is rejected without a request', (tester) async {
+    useTallScreen(tester);
     var requests = 0;
 
     final client = MockClient((request) async {
       requests++;
       return http.Response('{}', 500);
     });
-
     addTearDown(client.close);
 
     await tester.pumpWidget(SmishGuardApp(client: client));
-
     await tapAnalyzeButton(tester);
 
     expect(find.text('Enter a message first.'), findsOneWidget);
     expect(requests, 0);
   });
 
-  testWidgets('Submitted message displays the unavailable-model response', (
-    tester,
-  ) async {
+  testWidgets('Submitted message displays the unavailable-model response',
+      (tester) async {
+    useTallScreen(tester);
     var requests = 0;
 
     final client = MockClient((request) async {
@@ -63,16 +62,14 @@ void main() {
         headers: {'content-type': 'application/json'},
       );
     });
-
     addTearDown(client.close);
 
     await tester.pumpWidget(SmishGuardApp(client: client));
-
     await tester.enterText(find.byType(TextField), 'This is a sample message.');
-
     await tapAnalyzeButton(tester);
 
     expect(requests, 1);
+    expect(find.byKey(const ValueKey('status-card')), findsOneWidget);
     expect(
       find.text(
         'The server received your message. '
@@ -81,5 +78,56 @@ void main() {
       ),
       findsOneWidget,
     );
+    expect(find.byKey(const ValueKey('sms-assessment-card')), findsNothing);
+  });
+
+  testWidgets('Successful analysis shows separate SMS and URL cards',
+      (tester) async {
+    useTallScreen(tester);
+
+    final client = MockClient((request) async {
+      expect(request.url.path, '/analyze');
+
+      return http.Response(
+        jsonEncode({
+          'label': 'smishing',
+          'message': 'This message shows common smishing signs.',
+          'threat_intelligence': {
+            'source': 'PhishHunt',
+            'status': 'not_listed',
+            'message': 'No cached match was found. '
+                'This does not prove the link is safe.',
+          },
+        }),
+        200,
+        headers: {'content-type': 'application/json'},
+      );
+    });
+    addTearDown(client.close);
+
+    await tester.pumpWidget(SmishGuardApp(client: client));
+    await tester.enterText(find.byType(TextField), 'This is a sample message.');
+    await tapAnalyzeButton(tester);
+
+    // SMS assessment card
+    expect(find.byKey(const ValueKey('sms-assessment-card')), findsOneWidget);
+    expect(find.text('Possible smishing detected'), findsOneWidget);
+    expect(
+      find.text('This message shows common smishing signs.'),
+      findsOneWidget,
+    );
+
+    // URL check card
+    expect(find.byKey(const ValueKey('url-check-card')), findsOneWidget);
+    expect(find.text('No URL match in the PhishHunt feed'), findsOneWidget);
+    expect(
+      find.text(
+        'No cached match was found. This does not prove the link is safe.',
+      ),
+      findsOneWidget,
+    );
+
+    // No error card alongside a successful result
+    expect(find.byKey(const ValueKey('status-card')), findsNothing);
   });
 }
