@@ -157,6 +157,25 @@ class _AccountScreenState extends State<AccountScreen> {
         false;
   }
 
+  Future<void> _deleteAccount() async {
+    if (_busy) return;
+
+    final password = await showDialog<String>(
+      context: context,
+      builder: (_) => const _DeleteAccountDialog(),
+    );
+
+    if (password == null || password.isEmpty || !mounted) return;
+
+    await _run(() async {
+      await account.deleteAccount(password);
+      _username.clear();
+      _password.clear();
+      _registering = false;
+      _notice = 'Your account and all saved analyses were deleted.';
+    });
+  }
+
   String _date(dynamic value) {
     final parsed = DateTime.tryParse(value?.toString() ?? '');
     if (parsed == null) return 'Unknown time';
@@ -421,11 +440,100 @@ class _AccountScreenState extends State<AccountScreen> {
                     icon: const Icon(Icons.delete_sweep_outlined),
                     label: const Text('Clear my history'),
                   ),
+                const Divider(height: 40),
+                TextButton.icon(
+                  key: const ValueKey('delete-account-button'),
+                  style: TextButton.styleFrom(
+                    foregroundColor: Theme.of(context).colorScheme.error,
+                  ),
+                  onPressed: _busy ? null : _deleteAccount,
+                  icon: const Icon(Icons.person_remove_outlined),
+                  label: const Text('Delete my account'),
+                ),
               ],
             ],
           ],
         ),
       ),
+    );
+  }
+}
+
+/// Asks for the password before permanently deleting the account.
+/// Returns the entered password, or null when cancelled.
+class _DeleteAccountDialog extends StatefulWidget {
+  const _DeleteAccountDialog();
+
+  @override
+  State<_DeleteAccountDialog> createState() => _DeleteAccountDialogState();
+}
+
+class _DeleteAccountDialogState extends State<_DeleteAccountDialog> {
+  final _passwordController = TextEditingController();
+
+  @override
+  void dispose() {
+    _passwordController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final scheme = Theme.of(context).colorScheme;
+    final canSubmit = _passwordController.text.isNotEmpty;
+
+    return AlertDialog(
+      key: const ValueKey('delete-account-dialog'),
+      title: const Text('Delete your account?'),
+      content: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              'This permanently deletes your account, signs you out '
+              'everywhere, and deletes all your saved analyses. '
+              'This cannot be undone.',
+            ),
+            const SizedBox(height: 12),
+            const Text(
+              'Message reports you submitted are not linked to your '
+              'account and are kept for review.',
+            ),
+            const SizedBox(height: 16),
+            TextField(
+              key: const ValueKey('delete-account-password'),
+              controller: _passwordController,
+              obscureText: true,
+              autocorrect: false,
+              enableSuggestions: false,
+              maxLength: 128,
+              onChanged: (_) => setState(() {}),
+              decoration: const InputDecoration(
+                labelText: 'Enter your password to confirm',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          key: const ValueKey('confirm-delete-account-button'),
+          style: FilledButton.styleFrom(
+            backgroundColor: scheme.error,
+            foregroundColor: scheme.onError,
+          ),
+          onPressed: canSubmit
+              ? () => Navigator.pop(context, _passwordController.text)
+              : null,
+          child: const Text('Delete account'),
+        ),
+      ],
     );
   }
 }

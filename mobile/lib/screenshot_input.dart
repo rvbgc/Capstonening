@@ -5,6 +5,8 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:image_picker/image_picker.dart';
 
+import 'api_config.dart';
+
 class ScreenshotInput extends StatefulWidget {
   const ScreenshotInput({
     super.key,
@@ -110,7 +112,7 @@ class _ScreenshotInputState extends State<ScreenshotInput> {
 
       final request = http.MultipartRequest(
         'POST',
-        Uri.parse('http://10.0.2.2:8000/ocr'),
+        Uri.parse('$apiBaseUrl/ocr'),
       );
 
       request.files.add(

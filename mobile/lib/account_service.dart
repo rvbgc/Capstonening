@@ -4,6 +4,8 @@ import 'dart:convert';
 import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 
+import 'api_config.dart';
+
 class AccountException implements Exception {
   const AccountException(this.message);
 
@@ -16,7 +18,7 @@ class AccountException implements Exception {
 class AccountService {
   AccountService({required this.client});
 
-  static const baseUrl = 'http://10.0.2.2:8000';
+  static const baseUrl = apiBaseUrl;
   static const _tokenKey = 'smishguard_user_session';
 
   final http.Client client;
@@ -103,6 +105,7 @@ class AccountService {
       final message = switch (response.statusCode) {
         409 => 'That username is already registered.',
         422 => 'Check your username and password requirements.',
+        403 => 'Incorrect password. Your account was not deleted.',
         429 => 'Too many attempts. Wait a minute and try again.',
         404 => 'This history entry is no longer available.',
         503 => 'The service is temporarily unavailable.',
@@ -260,5 +263,19 @@ class AccountService {
       '/history?confirm=true',
       authenticated: true,
     );
+  }
+
+  /// Permanently deletes the signed-in account, its sessions and its saved
+  /// history. The password is checked again by the server.
+  Future<void> deleteAccount(String password) async {
+    await _request(
+      'POST',
+      '/auth/delete-account',
+      body: {'password': password, 'confirm': true},
+      authenticated: true,
+    );
+
+    // The server has already removed every session for this account.
+    await forgetSession();
   }
 }

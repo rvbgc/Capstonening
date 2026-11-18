@@ -13,6 +13,17 @@ void useTallScreen(WidgetTester tester) {
   addTearDown(tester.view.reset);
 }
 
+/// Answers the automatic server check made when the screen opens.
+http.Response? healthResponse(http.Request request) {
+  if (request.url.path != '/health') return null;
+
+  return http.Response(
+    jsonEncode({'status': 'ok', 'model_ready': true}),
+    200,
+    headers: {'content-type': 'application/json'},
+  );
+}
+
 Future<void> tapAnalyzeButton(WidgetTester tester) async {
   final button = find.byKey(const ValueKey('analyze-message-button'));
 
@@ -30,6 +41,9 @@ void main() {
     var requests = 0;
 
     final client = MockClient((request) async {
+      final health = healthResponse(request);
+      if (health != null) return health;
+
       requests++;
       return http.Response('{}', 500);
     });
@@ -48,6 +62,9 @@ void main() {
     var requests = 0;
 
     final client = MockClient((request) async {
+      final health = healthResponse(request);
+      if (health != null) return health;
+
       requests++;
 
       expect(request.method, 'POST');
@@ -86,6 +103,9 @@ void main() {
     useTallScreen(tester);
 
     final client = MockClient((request) async {
+      final health = healthResponse(request);
+      if (health != null) return health;
+
       expect(request.url.path, '/analyze');
 
       return http.Response(
@@ -129,5 +149,41 @@ void main() {
 
     // No error card alongside a successful result
     expect(find.byKey(const ValueKey('status-card')), findsNothing);
+  });
+
+  testWidgets('Server connection is checked automatically on open',
+      (tester) async {
+    useTallScreen(tester);
+    var healthChecks = 0;
+
+    final client = MockClient((request) async {
+      if (request.url.path == '/health') healthChecks++;
+      return healthResponse(request) ?? http.Response('{}', 500);
+    });
+    addTearDown(client.close);
+
+    await tester.pumpWidget(SmishGuardApp(client: client));
+    await tester.pumpAndSettle();
+
+    expect(healthChecks, 1);
+    expect(find.text('Server connected. Model is available.'), findsOneWidget);
+  });
+
+  testWidgets('Unreachable server shows the address being used',
+      (tester) async {
+    useTallScreen(tester);
+
+    final client = MockClient((request) async {
+      throw http.ClientException('Connection refused', request.url);
+    });
+    addTearDown(client.close);
+
+    await tester.pumpWidget(SmishGuardApp(client: client));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('Cannot reach the server at http://10.0.2.2:8000'),
+      findsOneWidget,
+    );
   });
 }

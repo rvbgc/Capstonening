@@ -6,6 +6,7 @@ import 'package:http/http.dart' as http;
 
 import 'account_screen.dart';
 import 'account_service.dart';
+import 'api_config.dart';
 import 'backend_status.dart';
 import 'screenshot_input.dart';
 
@@ -211,7 +212,7 @@ class _MessageScreenState extends State<MessageScreen> {
 
       final response = await _client
           .post(
-            Uri.parse('http://10.0.2.2:8000/reports'),
+            Uri.parse('$apiBaseUrl/reports'),
             headers: {'Content-Type': 'application/json'},
             body: jsonEncode({
               'text': text,
@@ -618,7 +619,7 @@ class _MessageScreenState extends State<MessageScreen> {
             keyboardDismissBehavior: ScrollViewKeyboardDismissBehavior.onDrag,
             padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
             children: [
-              const BackendStatus(),
+              BackendStatus(client: _client),
               const SizedBox(height: 8),
 
               // ---------------- Header ----------------

@@ -67,6 +67,13 @@ class RegisterRequest(LoginRequest):
     password: SecretStr = Field(min_length=12, max_length=128)
 
 
+class DeleteAccountRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    password: SecretStr = Field(min_length=1, max_length=128)
+    confirm: Literal[True]
+
+
 class PublicUser(BaseModel):
     id: UUID
     username: str
@@ -335,5 +342,64 @@ def logout(user=Depends(require_user)):
             """,
             (user["token_hash"], user["id"]),
         )
+
+    return Response(status_code=204)
+
+
+@router.post("/delete-account", status_code=204)
+def delete_account(
+    submission: DeleteAccountRequest,
+    request: Request,
+    user=Depends(require_user),
+):
+    """Permanently delete the signed-in account.
+
+    The password is checked again so that an unattended, signed-in phone
+    cannot delete the account. Deleting the user row also deletes the
+    account's sessions and saved history (ON DELETE CASCADE). Submitted
+    reports are not linked to accounts and are kept.
+    """
+    limit_attempts(request, "delete-account", 5)
+
+    with account_cursor() as cursor:
+        cursor.execute(
+            """
+            SELECT password_hash
+            FROM public.users
+            WHERE id = %s AND is_active = TRUE;
+            """,
+            (user["id"],),
+        )
+        row = cursor.fetchone()
+
+    if row is None:
+        raise unauthorized()
+
+    with password_operation():
+        password_matches = password_hasher.verify(
+            submission.password.get_secret_value(),
+            row["password_hash"],
+        )
+
+    if not password_matches:
+        # 403, not 401: the session is still valid, only the password is wrong.
+        raise HTTPException(
+            status_code=403,
+            detail="Incorrect password. The account was not deleted.",
+        )
+
+    with account_cursor() as cursor:
+        cursor.execute(
+            """
+            DELETE FROM public.users
+            WHERE id = %s
+            RETURNING id;
+            """,
+            (user["id"],),
+        )
+        deleted = cursor.fetchone()
+
+    if deleted is None:
+        raise unauthorized()
 
     return Response(status_code=204)
